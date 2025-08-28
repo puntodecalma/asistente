@@ -1,0 +1,22 @@
+{
+  "name": "bot-psicologia",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "cheerio": "^1.1.2",
+    "dotenv": "^17.2.1",
+    "googleapis": "^156.0.0",
+    "node-fetch": "^3.3.2",
+    "puppeteer": "^24.17.0",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.32.0"
+  }
+}
