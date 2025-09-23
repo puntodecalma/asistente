@@ -1,4 +1,4 @@
-
+// index.js
 const path = require("path");
 const fs = require("fs");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
@@ -32,10 +32,13 @@ const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || "http://localhost:3000/oauth2callback";
 
-// Trigger para grupos (si en .env hay dos líneas, dotenv toma la última; aquí solo leemos una)
+// Trigger para grupos
 const GROUP_TRIGGER = (process.env.GROUP_TRIGGER || "!psico").toLowerCase();
 
-// Terapias (costos/duración) — sobrescribibles con THERAPY_CONFIG en .env (JSON)
+// Deshabilita respuestas LLM libres (mantenemos el código pero no se usa)
+const ALLOW_FREEFORM_LLM = false;
+
+/* ======== CONFIG TERAPIAS ======== */
 const DEFAULT_THERAPY_CONFIG = {
   individual: { price: 600, durationMin: 50, label: "Terapia individual" },
   pareja: { price: 850, durationMin: 70, label: "Terapia de pareja" },
@@ -55,7 +58,7 @@ try {
   console.warn("⚠️ THERAPY_CONFIG inválido, usando defaults. Error:", e.message);
 }
 
-// 🚫 Números a ignorar (si los necesitas)
+// 🚫 Números a ignorar
 const IGNORED_NUMBERS = [];
 
 /*Depurar */
@@ -64,7 +67,7 @@ function dbg(...args) {
   console.log(`[DBG ${ts}]`, ...args);
 }
 
-/* =======  LIMPIEZA DE DIRECTORIOS WWebJS AL INICIAR  ======= */
+/* =======  LIMPIEZA DE DIRECTORIOS WWebJS ======= */
 const AUTH_DIR = path.resolve(__dirname, ".wwebjs_auth");
 const CACHE_DIR = path.resolve(__dirname, ".wwebjs_cache");
 function cleanupWhatsAppDirs() {
@@ -115,7 +118,7 @@ async function generateWithGemini(content, { tries = 4 } = {}) {
   throw lastErr;
 }
 
-/* ==========  SCRAPER (opcional, si hay sitio)  ========== */
+/* ==========  SCRAPER  ========== */
 let siteCache = { text: "", at: 0 };
 async function scrapeClinicText() {
   if (!CLINIC_SITE_URL) return "";
@@ -134,7 +137,7 @@ async function scrapeClinicText() {
   return mainText;
 }
 
-/* ==========  AVISOS AL ADMIN  ========== */
+/* ==========  AVISOS ADMIN  ========== */
 async function sendToAdmin(messageText) {
   try {
     if (!ADMIN_NUMBER || ADMIN_NUMBER.length < 9) {
@@ -155,23 +158,28 @@ async function sendToAdmin(messageText) {
 }
 
 /* ==========  WHATSAPP CLIENT  ========== */
+// const client = new Client({
+//   authStrategy: new LocalAuth({ clientId: "bot-psicologia" }),
+//   puppeteer: {
+//     headless: false,
+//     executablePath: process.env.FILE_LOCATION || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+//     args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--window-size=1280,800"],
+//   },
+//   webVersionCache: { type: "local" },
+// });
 const client = new Client({
   authStrategy: new LocalAuth({ clientId: "bot-psicologia" }),
   puppeteer: {
-    headless: false,
-    executablePath: process.env.FILE_LOCATION || undefined,
-    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--window-size=1280,800"],
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
   },
-  webVersionCache: { type: "local" },
 });
-
 /* ==========  SESIONES EN MEMORIA  ========== */
 const sessions = new Map();
 function getSession(chatId) {
   if (!sessions.has(chatId)) sessions.set(chatId, { state: "IDLE", data: {}, last: Date.now() });
   const s = sessions.get(chatId); s.last = Date.now(); return s;
 }
-// 🔧 CORRECCIÓN: cada vez que cambias de estado o agregas datos, imprime TODO lo guardado
 function setState(chatId, state, patch = {}) {
   const s = getSession(chatId);
   s.state = state;
@@ -180,8 +188,8 @@ function setState(chatId, state, patch = {}) {
 }
 function reset(chatId) { sessions.set(chatId, { state: "IDLE", data: {}, last: Date.now() }); }
 
-/* ====== CONTROL: MUTEO DE BOT POR CHAT (HUMANO) ====== */
-const botMute = new Map(); // chatId -> timestamp ms
+/* ====== CONTROL BOT MUTE ====== */
+const botMute = new Map();
 function isBotMuted(chatId) {
   const until = botMute.get(chatId);
   if (!until) return false;
@@ -191,29 +199,30 @@ function isBotMuted(chatId) {
 function muteBot(chatId, ms) {
   const until = Date.now() + ms;
   botMute.set(chatId, until);
-  setTimeout(() => { if (botMute.get(chatId) === until) botMute.delete(chatId); }, ms + 2_000);
+  setTimeout(() => { if (botMute.get(chatId) === until) botMute.delete(chatId); }, ms + 2000);
 }
 function unmuteBot(chatId) { botMute.delete(chatId); }
 
-/* ==========  UTILS TEXTO  ========== */
-const isGreeting = (text) => !!text && /\b(hola|buenos dias|buenas|buenas tardes|buenas noches|lol)\b/i.test(text.trim());
-const isCancel = (text) => !!text && ["menú", "menu", "salir", "inicio"].includes(text.toLowerCase().trim());
+/* ========== UTILS TEXTO ========== */
+const isGreeting = (text) => !!text && ["hola"].includes(text.toLowerCase().trim());
+// Solo permitir volver con 'menú/menu' para cumplir el requisito
+const isCancel = (text) => !!text && ["menú", "menu"].includes(text.toLowerCase().trim());
 const onlyDigits = (s) => (s || "").replace(/\D/g, "");
 const isYes = (t) => /\b(si|sí|correcto|confirmo|ok|de acuerdo|así es|vale)\b/i.test((t || "").trim());
 const isNo = (t) => /\b(no|negativo|cambiar|no es|otra|equivocado)\b/i.test((t || "").trim());
 
-/* ==========  COPYS Y MENÚ  ========== */
+/* ========== COPYS Y MENÚ ========== */
 const WELCOME_MENU =
   `🤖 Gracias por contactar a *${CLINIC_NAME}*.\n` +
-  "¿En qué puedo apoyarte hoy?\n\n" +
-  "1. Agendar cita\n" +
-  "2. Conocer la ubicación del consultorio\n" +
-  "3. Horarios de servicio\n" +
-  "4. Tengo una emergencia / hablar con la psicóloga\n" +
-  "5. Olvidé mi cita / perdí el link de la reunión\n" +
-  "6. Conocer la información y costo de las terapias\n" +
+  "¿En qué puedo asistirle hoy?\n\n" +
+  "1. Agendar una cita\n" +
+  "2. Consultar la ubicación del consultorio\n" +
+  "3. Horarios de atención\n" +
+  "4. Tengo una emergencia / contactar a la psicóloga\n" +
+  "5. Olvidé mi cita o perdí el enlace de la reunión\n" +
+  "6. Información y costo de las terapias\n" +
   "7. Atención a empresas\n\n" +
-  "_Escribe el número de la opción, o `menú` para volver aquí._";
+  "_Escriba el número de la opción, o `menú` para regresar a este menú._";
 
 const EMERGENCY_COPY =
   `⚠️ *Importante*: ${EMERGENCY_NOTE}\n\n` +
@@ -228,7 +237,7 @@ const LOCATION_COPY =
   `Mapa: ${CLINIC_MAPS_URL}\n\n` +
   "Si necesitas referencias adicionales, con gusto te apoyamos.";
 
-/* ==========  INFO TERAPIAS (Gemini + cache general)  ========== */
+/* ==========  INFO TERAPIAS  ========== */
 let therapiesCache = { text: "", at: 0 };
 const THERAPIES_STATIC =
   "Ofrecemos atención *presencial* y *en línea*.\n\n" +
@@ -237,6 +246,7 @@ const THERAPIES_STATIC =
   "2) Terapia de pareja\n" +
   "3) Terapia para adolescentes (15+)\n\n" +
   "Responde con el *número* para ver detalles, costo y duración.";
+
 async function buildTherapiesInfoGeneral() {
   const now = Date.now();
   if (therapiesCache.text && now - therapiesCache.at < INFO_TEXT_TTL_MS) return therapiesCache.text;
@@ -247,9 +257,9 @@ async function buildTherapiesInfoGeneral() {
       return THERAPIES_STATIC;
     }
     const prompt =
-      `=== TEXTO DEL SITIO (recortado) ===\n${siteText}\n=== FIN ===\n\n` +
-      `Eres recepcionista de ${CLINIC_NAME}. Redacta (3–6 líneas, español cálido y claro) un resumen de servicios de terapia. ` +
-      `No inventes. Menciona que el cliente puede elegir: individual, pareja, adolescentes.`;
+      `=== TEXTO DEL SITIO ===\n${siteText}\n=== FIN ===\n\n` +
+      `Eres recepcionista de ${CLINIC_NAME}. Resume en 3–6 líneas claras los servicios de terapia. ` +
+      `Menciona que hay opciones: individual, pareja, adolescentes.`;
     const out = await generateWithGemini(prompt, { tries: 4 });
     const text = (out && out.trim()) ? out.trim() : THERAPIES_STATIC;
     therapiesCache = { text, at: now };
@@ -260,7 +270,6 @@ async function buildTherapiesInfoGeneral() {
   }
 }
 
-// Detalle por tipo con Gemini (sin cache para personalizar por selección)
 async function buildTherapyDetailByType(typeKey) {
   const cfg = THERAPY_CONFIG[typeKey];
   const label = cfg?.label || typeKey;
@@ -272,9 +281,8 @@ async function buildTherapyDetailByType(typeKey) {
     `Duración: *${cfg?.durationMin ?? "—"} minutos*\n`;
   if (!genAI || !siteText) return baseDetail + "\n¿Deseas *agendar*? Responde *1*.";
   const prompt =
-    `=== TEXTO DEL SITIO (recortado) ===\n${siteText}\n=== FIN ===\n\n` +
-    `Resume en 3–5 líneas (español, cálido, claro, sin inventar) los puntos clave de "${label}". ` +
-    `NO menciones precios ni duración; yo los agregaré.`;
+    `=== TEXTO DEL SITIO ===\n${siteText}\n=== FIN ===\n\n` +
+    `Resume en 3–5 líneas (sin inventar) los puntos clave de "${label}". No menciones precios ni duración.`;
   try {
     const extra = await generateWithGemini(prompt, { tries: 3 });
     const safe = (extra || "").trim();
@@ -285,60 +293,34 @@ async function buildTherapyDetailByType(typeKey) {
 }
 
 /* ==========  MEDIA LOCAL  ========== */
-// ✅ Solo Opción 2 enviará imagen. Horarios y Terapias serán SOLO TEXTO.
 function mediaFrom(file) { return MessageMedia.fromFilePath(path.resolve(__dirname, "assets", file)); }
-function getImgUbicacion() { return mediaFrom("Ubicacion.png"); } // ← Imagen fija para ubicación
+function getImgUbicacion() { return mediaFrom("Ubicacion.png"); }
 
-/* ==========  AVISOS AL ADMIN (duplicado intencional según tu código original)  ========== */
-async function sendToAdminDuplicate(messageText) {
-  try {
-    if (!ADMIN_NUMBER) {
-      console.warn("⚠️ ADMIN_NUMBER no definido o inválido. No se puede notificar al admin.");
-      return false;
-    }
-    const numberId = await client.getNumberId(ADMIN_NUMBER);
-    if (!numberId) {
-      console.error(`❌ getNumberId no resolvió ${ADMIN_NUMBER}. ¿Tiene WhatsApp y chat iniciado?`);
-      return false;
-    }
-    const chatId = numberId._serialized;
-    await client.sendMessage(chatId, messageText);
-    console.log(`✅ Aviso enviado al admin (${chatId}).`);
-    return true;
-  } catch (e) {
-    console.error("❌ Error enviando mensaje al admin:", e?.message || e);
-    return false;
-  }
-}
-
-/* ======== Utilidades de fecha con zona horaria ======== */
+/* ==========  FECHAS Y HORAS ========== */
 function todayInTZ(tz) {
-  const f = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+  const f = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
   const parts = f.formatToParts(new Date());
-  const y = parts.find(p => p.type === 'year')?.value || '1970';
-  const m = parts.find(p => p.type === 'month')?.value || '01';
-  const d = parts.find(p => p.type === 'day')?.value || '01';
+  const y = parts.find(p => p.type === "year")?.value || "1970";
+  const m = parts.find(p => p.type === "month")?.value || "01";
+  const d = parts.find(p => p.type === "day")?.value || "01";
   return new Date(`${y}-${m}-${d}T00:00:00`);
 }
 function addDays(date, days) { const d = new Date(date); d.setDate(d.getDate() + days); return d; }
 function toISODateLocal(date) {
   const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
 const WEEKDAYS = { 'domingo': 0, 'lunes': 1, 'martes': 2, 'miércoles': 3, 'miercoles': 3, 'jueves': 4, 'viernes': 5, 'sábado': 6, 'sabado': 6 };
 const MONTHS = { 'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4, 'mayo': 5, 'junio': 6, 'julio': 7, 'agosto': 8, 'septiembre': 9, 'setiembre': 9, 'octubre': 10, 'noviembre': 11, 'diciembre': 12 };
 
-/* ======== Parser de fecha ======== */
 async function parseDateSmart(input) {
   const txt = (input || '').toLowerCase().trim();
   const base = todayInTZ(TIMEZONE);
-
   if (/\b(hoy)\b/.test(txt)) return { isoDate: toISODateLocal(base), readable: 'hoy' };
   if (/\b(pasado\s+mañana|pasado\s+manana)\b/.test(txt)) { const d = addDays(base, 2); return { isoDate: toISODateLocal(d), readable: 'pasado mañana' }; }
   if (/\b(mañana|manana)\b/.test(txt)) { const d = addDays(base, 1); return { isoDate: toISODateLocal(d), readable: 'mañana' }; }
-
   const mDia = txt.match(/\b(próximo|proximo|este|esta)\s+(domingo|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado)\b/);
   if (mDia) {
     const wd = WEEKDAYS[mDia[2]]; const todayWD = base.getDay();
@@ -346,7 +328,6 @@ async function parseDateSmart(input) {
     if (delta === 0 || mDia[1].startsWith('próximo') || mDia[1].startsWith('proximo')) delta = (delta === 0 ? 7 : delta);
     const d = addDays(base, delta); return { isoDate: toISODateLocal(d), readable: `${mDia[1]} ${mDia[2]}` };
   }
-
   let m = txt.match(/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{4}))?\b/);
   if (m) {
     let [_, dd, mm, yyyy] = m; dd = parseInt(dd, 10); mm = parseInt(mm, 10); yyyy = yyyy ? parseInt(yyyy, 10) : base.getFullYear();
@@ -355,7 +336,6 @@ async function parseDateSmart(input) {
     const finalDate = (!m[3] && inPast) ? new Date(`${yyyy + 1}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}T00:00:00`) : candidate;
     return { isoDate: toISODateLocal(finalDate), readable: `${dd}/${mm}${m[3] ? `/${yyyy}` : ''}` };
   }
-
   m = txt.match(/\b(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)(?:\s+de\s+(\d{4}))?\b/);
   if (m) {
     let dd = parseInt(m[1], 10); let mm = MONTHS[m[2]]; let yyyy = m[3] ? parseInt(m[3], 10) : base.getFullYear();
@@ -363,12 +343,9 @@ async function parseDateSmart(input) {
     if (!m[3] && candidate < base) candidate = new Date(`${yyyy + 1}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}T00:00:00`);
     return { isoDate: toISODateLocal(candidate), readable: `${dd} de ${m[2]}${m[3] ? ` de ${yyyy}` : ''}` };
   }
-
-  // Sin LLM, devolvemos vacío
   return { isoDate: null, readable: null };
 }
 
-/* ======== Parser de hora ======== */
 function toTwo(n) { return String(n).padStart(2, '0'); }
 function parseTimeByRules(input) {
   if (!input) return { isoTime: null, readable: null };
@@ -383,58 +360,109 @@ function parseTimeByRules(input) {
   if (m) { let h = parseInt(m[1], 10); if (h >= 0 && h <= 23) { if (h >= 1 && h <= 11) h += 12; return { isoTime: `${toTwo(h)}:00`, readable: `${toTwo(h)}:00` }; } }
   return { isoTime: null, readable: null };
 }
-async function parseTimeSmart(input) {
-  return parseTimeByRules(input);
+async function parseTimeSmart(input) { return parseTimeByRules(input); }
+
+/* ========== GOOGLE CALENDAR ========== */
+function buildEventRange(fechaISO, horaISO, durationMin) {
+  // Crear fecha/hora en la zona configurada
+  const [h, m] = horaISO.split(":").map(Number);
+  const [y, mo, d] = fechaISO.split("-").map(Number);
+
+  // Fecha local en la zona configurada
+  const start = new Date(Date.UTC(y, mo - 1, d, h, m));
+  const end = new Date(start.getTime() + durationMin * 60000);
+
+  // Formato RFC3339 completo con offset Z (UTC)
+  const startDT = start.toISOString();
+  const endDT = end.toISOString();
+
+  return { startDT, endDT };
 }
 
-/* ==========  GOOGLE CALENDAR  ========== */
-function getCalendarClient() {
+// === NUEVO: sumar minutos y devolver sello “local” (sin Z) y UTC a la vez ===
+function addMinutesLocalStamp(fechaISO, horaISO, minutes) {
+  const [y, mo, d] = fechaISO.split("-").map(Number);
+  const [h, mi] = horaISO.split(":").map(Number);
+  const ms = Date.UTC(y, mo - 1, d, h, mi) + minutes * 60000;
+  const nd = new Date(ms);
+  const newDate = `${nd.getUTCFullYear()}-${toTwo(nd.getUTCMonth() + 1)}-${toTwo(nd.getUTCDate())}`;
+  const newTime = `${toTwo(nd.getUTCHours())}:${toTwo(nd.getUTCMinutes())}`;
+  return { date: newDate, time: newTime };
+}
+
+function buildEventRangeDual(fechaISO, horaISO, durationMin) {
+  // Local “flotante” (sin Z), para crear el evento con timeZone
+  const startLocal = `${fechaISO}T${horaISO}:00`;
+  const endLocalParts = addMinutesLocalStamp(fechaISO, horaISO, durationMin);
+  const endLocal = `${endLocalParts.date}T${endLocalParts.time}:00`;
+
+  // Ventana absoluta en UTC, para freebusy
+  const [y, mo, d] = fechaISO.split("-").map(Number);
+  const [h, m] = horaISO.split(":").map(Number);
+  const msStartUTC = Date.UTC(y, mo - 1, d, h, m);
+  const startUTC = new Date(msStartUTC).toISOString();
+  const endUTC = new Date(msStartUTC + durationMin * 60000).toISOString();
+
+  return { startLocal, endLocal, startUTC, endUTC };
+}
+function getOAuth2() {
   if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REFRESH_TOKEN) {
     throw new Error("Faltan GOOGLE_CLIENT_ID/SECRET/REFRESH_TOKEN en .env");
   }
-  const oAuth2Client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI);
+  const oAuth2Client = new google.auth.OAuth2(
+    GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET,
+    GOOGLE_REDIRECT_URI
+  );
   oAuth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
-  return google.calendar({ version: "v3", auth: oAuth2Client });
-}
 
-async function isSlotFree(startISO, endISO) {
+  oAuth2Client.on("tokens", (tokens) => {
+    if (tokens.access_token) dbg("🔐 Nuevo access_token obtenido automáticamente.");
+    if (tokens.refresh_token) dbg("🔄 Google envió UN NUEVO refresh_token (guárdalo).");
+  });
+
+  return oAuth2Client;
+}
+async function getCalendarClient() {
+  const auth = getOAuth2();
+  await auth.getAccessToken(); // fuerza nuevo token fresco
+  return google.calendar({ version: "v3", auth });
+}
+async function isSlotFree(startDT, endDT) {
   try {
-    const calendar = getCalendarClient();
+    const calendar = await getCalendarClient();
     const res = await calendar.freebusy.query({
       requestBody: {
-        timeMin: startISO,
-        timeMax: endISO,
-        timeZone: TIMEZONE,
+        timeMin: startDT,
+        timeMax: endDT,
+        timeZone: TIMEZONE,  // 👈 muy importante
         items: [{ id: GOOGLE_CALENDAR_ID }],
       },
     });
     const busy = res.data.calendars[GOOGLE_CALENDAR_ID]?.busy || [];
     return busy.length === 0;
   } catch (e) {
-    console.error("❌ Error consultando disponibilidad:", e.message);
+    console.error("❌ Error consultando disponibilidad:", e?.message || e);
     throw e;
   }
 }
-async function createCalendarEvent({ summary, description, startISO, endISO }) {
-  const calendar = getCalendarClient();
+async function createCalendarEvent({ summary, description, startDT, endDT }) {
+  const calendar = await getCalendarClient();
   try {
     const event = {
       summary,
       description,
-      start: { dateTime: startISO, timeZone: TIMEZONE },
-      end: { dateTime: endISO, timeZone: TIMEZONE },
+      start: { dateTime: startDT, timeZone: TIMEZONE },
+      end: { dateTime: endDT, timeZone: TIMEZONE },
     };
-
     const res = await calendar.events.insert({
-      calendarId: GOOGLE_CALENDAR_ID, // normalmente "primary"
+      calendarId: GOOGLE_CALENDAR_ID,
       requestBody: event,
     });
-
-    dbg("✅ Evento creado en Google Calendar:", res.data.id, res.data.htmlLink);
+    dbg("✅ Evento creado:", res.data.id, res.data.htmlLink);
     return res.data;
-
   } catch (err) {
-    console.error("❌ Error creando evento en Calendar:", err.message);
+    console.error("❌ Error creando evento:", err?.message || err);
     throw err;
   }
 }
@@ -458,7 +486,6 @@ client.on("disconnected", (r) => console.error("🔌 Desconectado:", r));
 /* ==================  HANDLER MSG  ==================== */
 client.on("message", async (msg) => {
   try {
-    // --- DEBUG ---
     dbg("Mensaje recibido:", {
       from: msg.from,
       author: msg.author || null,
@@ -472,24 +499,16 @@ client.on("message", async (msg) => {
     const myWid = client.info?.wid?._serialized;
     const isSelfChat = chatId === myWid;
 
-    // Ignorar ecos propios excepto self-chat
-    if (msg.fromMe && !isSelfChat) {
-      dbg("Ignorado: mensaje propio en chat que no es self-chat.");
-      return;
-    }
+    if (msg.fromMe && !isSelfChat) return;
 
     let text = (msg.body || "").trim();
-    const lower = text.toLowerCase();
+    let lower = text.toLowerCase();
 
-    // Ignorados
-    if (IGNORED_NUMBERS.includes(chatId)) {
-      console.log(`⚠️ Mensaje ignorado de ${chatId}`);
-      return;
-    }
+    if (IGNORED_NUMBERS.includes(chatId)) return;
 
-    // ====== COMANDOS DEL ADMIN PARA REACTIVAR BOT ======
     const adminChatIdSuffix = `${ADMIN_NUMBER}@c.us`;
     const isFromAdmin = ADMIN_NUMBER && chatId === adminChatIdSuffix;
+
     if (isFromAdmin) {
       const m = lower.match(/^activate\s+bot(?:\s+(\d{9,15}))?$/i);
       if (m) {
@@ -515,143 +534,113 @@ client.on("message", async (msg) => {
       }
     }
 
-    // Si el chat está muteado (canal humano), no responder.
-    if (isBotMuted(chatId) && !isFromAdmin) {
-      dbg(`Chat ${chatId} está en modo HUMANO (muteado). No respondo.`);
-      return;
-    }
+    if (isBotMuted(chatId) && !isFromAdmin) return;
 
-    // ======== DETECCIÓN DE COMANDOS ========
     const startsWithTrigger = lower.startsWith(GROUP_TRIGGER);
     const startsWithGemini = lower.startsWith("gemini");
-
-    // En grupos además permitimos mención al bot o prefijos ! / como activadores
     const myId = client.info?.wid?._serialized;
     const byMention = Array.isArray(msg.mentionedIds) && myId
       ? msg.mentionedIds.includes(myId)
       : false;
     const byPrefix = isGroup ? /^([!\/])\S/.test(lower) : false;
 
-    dbg("Triggers:", {
-      isGroup, startsWithTrigger, startsWithGemini, byMention, byPrefix, GROUP_TRIGGER
-    });
+    // En grupos: responder SOLO si empieza con el trigger (!psico)
+    if (isGroup && !startsWithTrigger) return;
 
-    // ======== RAMA COMANDOS GLOBALES (!trigger / gemini) ========
+    // Si trae trigger, quitamos el prefijo y continuamos con el flujo normal
     if (startsWithTrigger) {
-      const prompt = text.slice(GROUP_TRIGGER.length).trim();
-      if (!prompt) {
-        await msg.reply(`👋 Escribe tu consulta después de "${GROUP_TRIGGER}". Ej: *${GROUP_TRIGGER} hola*`);
-        dbg("Comando sin prompt tras trigger.");
+      text = text.slice(GROUP_TRIGGER.length).trim();
+      lower = text.toLowerCase();
+      // Si sólo envían el prefijo, mostramos el menú
+      if (!text) {
+        reset(chatId);
+        await msg.reply(WELCOME_MENU);
         return;
       }
-      dbg("Ejecutando GEMINI por trigger con prompt:", prompt);
-      try {
-        const out = await generateWithGemini(prompt || "Hola, ¿en qué te ayudo?");
-        const reply = out && out.length > 0 ? (out.length > 4000 ? out.slice(0, 4000) + "…" : out) : "🙂";
-        await msg.reply(reply);
-        dbg("Respuesta GEMINI enviada (trigger).");
-      } catch (e) {
-        console.error("Error GEMINI (trigger):", e?.message || e);
-        await msg.reply("⚠️ El modelo está ocupado. Intentémoslo más tarde.");
-      }
-      return;
     }
 
-    if (startsWithGemini) {
+    // Deshabilitar respuestas LLM libres (mantenemos el código, pero no se ejecuta)
+    if (ALLOW_FREEFORM_LLM && startsWithGemini) {
       const prompt = text.slice(6).trim();
-      dbg("Ejecutando GEMINI por palabra clave con prompt:", prompt);
       try {
         const out = await generateWithGemini(prompt || "Hola, ¿en qué te ayudo?");
         const reply = out && out.length > 0 ? (out.length > 4000 ? out.slice(0, 4000) + "…" : out) : "🙂";
         await msg.reply(reply);
-        dbg("Respuesta GEMINI enviada (keyword).");
-      } catch (e) {
-        console.error("Error GEMINI (keyword):", e?.message || e);
+      } catch {
         await msg.reply("⚠️ El modelo está ocupado. Intentémoslo más tarde.");
       }
       return;
     }
-
-    if (isGroup && (byMention || byPrefix)) {
+    if (ALLOW_FREEFORM_LLM && isGroup && (byMention || byPrefix)) {
       let prompt = text;
       if (byPrefix) prompt = prompt.replace(/^([!\/])\s*/, "");
-      dbg("Ejecutando GEMINI por mención/prefijo en grupo. Prompt:", prompt);
       try {
         const out = await generateWithGemini(prompt || "Hola, ¿en qué te ayudo?");
         const reply = out && out.length > 0 ? (out.length > 4000 ? out.slice(0, 4000) + "…" : out) : "🙂";
         await msg.reply(reply);
-        dbg("Respuesta GEMINI enviada (mention/prefix).");
-      } catch (e) {
-        console.error("Error GEMINI (mention/prefix):", e?.message || e);
+      } catch {
         await msg.reply("⚠️ El modelo está ocupado. Intentémoslo más tarde.");
       }
       return;
     }
 
-    // ======== FLUJO NORMAL (MENÚ) ========
-    if (isCancel(text) || isGreeting(text)) {
-      dbg("Entró a menú (greeting/cancel).");
+    // Sesión y activación
+    const session = getSession(chatId);
+    const state = session?.state || "IDLE";
+    const isHola = lower === "hola";
+    const isMenuCmd = lower === "menú" || lower === "menu";
+    const isMenuOption = /^[1-7]$/.test(lower);
+
+    // Si la sesión está IDLE, responder sólo a "hola", "menú/menu", o una opción 1–7
+    // (los grupos ya fueron filtrados por el prefijo más arriba)
+    if (state === "IDLE" && !isHola && !isMenuCmd && !isMenuOption) return;
+
+    // Permitir volver al menú en cualquier momento
+    if (isMenuCmd || isGreeting(text)) {
       reset(chatId);
       await msg.reply(WELCOME_MENU);
       return;
     }
 
-    const session = getSession(chatId);
-    dbg("Estado actual:", session.state);
+    // Evita redeclarar 'session' (antes: const session = getSession(chatId);)
+    const session2 = getSession(chatId);
 
-    switch (session.state) {
+    switch ((session2 || session).state) {
       case "IDLE": {
         if (/^[1-7]$/.test(text)) {
           const n = text;
-
           if (n === "1") {
-            dbg("Rama: Agendar (1)");
             await msg.reply("📅 *Agendar cita*\nPaso 1/4: Indícame tu *nombre completo*.");
             setState(chatId, "CITA_NOMBRE");
             return;
           }
-
           if (n === "2") {
-            dbg("Rama: Ubicación (2)");
             try { await client.sendMessage(chatId, getImgUbicacion(), { caption: LOCATION_COPY }); }
-            catch {
-              console.warn("Falla enviando imagen de ubicación; envío texto.");
-              await msg.reply(LOCATION_COPY);
-            }
+            catch { await msg.reply(LOCATION_COPY); }
             return;
           }
-
           if (n === "3") {
-            dbg("Rama: Horarios (3)");
             await msg.reply(HOURS_COPY);
             return;
           }
-
           if (n === "4") {
-            dbg("Rama: Emergencia (4) → pausa bot + avisa admin");
             await msg.reply(EMERGENCY_COPY);
-            // Mutea el bot por 24 horas
             const H24 = 24 * 60 * 60 * 1000;
             muteBot(chatId, H24);
             setState(chatId, "HUMANO");
             const aviso =
               "🚨 *ALERTA EMERGENCIA / HUMANO*\n" +
-              `• Cliente (chatId): ${chatId}\n` +
-              `• Desde ahora el bot está *pausado 24h* para este chat.\n` +
-              `• Para reactivar manualmente: *activate bot ${onlyDigits(chatId)}* (envíalo aquí).`;
+              `• Cliente: ${chatId}\n` +
+              `• Bot pausado 24h. Para reactivar: *activate bot ${onlyDigits(chatId)}*`;
             await sendToAdmin(aviso);
             return;
           }
-
           if (n === "5") {
-            dbg("Rama: Recuperar cita/link (5)");
-            await msg.reply("🔗 *Recuperar cita/link*\nPaso 1/2: Escríbeme tu *nombre completo* como aparece en tu cita.");
+            await msg.reply("🔗 *Recuperar cita/link*\nPaso 1/2: Escríbeme tu *nombre completo*.");
             setState(chatId, "FORGOT_NAME");
             return;
           }
-
           if (n === "6") {
-            dbg("Rama: Info terapias (6) → pregunta tipo");
             const info = await buildTherapiesInfoGeneral();
             const options =
               "\n\nElige una opción:\n" +
@@ -662,26 +651,20 @@ client.on("message", async (msg) => {
             setState(chatId, "THERAPY_TYPE");
             return;
           }
-
           if (n === "7") {
-            dbg("Rama: Empresas (7)");
             const texto =
               "🏢 *Atención a empresas*\n" +
-              "Ofrecemos charlas, talleres de bienestar emocional, intervención en crisis y evaluaciones. " +
-              "Compártenos el tamaño de tu empresa y el servicio de interés para preparar una propuesta.\n\n" +
+              "Ofrecemos charlas, talleres y evaluaciones. " +
               "¿Deseas que te llame una asesora? *sí/no*";
             await msg.reply(texto);
             setState(chatId, "EMPRESAS_CONFIRM");
             return;
           }
         } else {
-          dbg("IDLE sin opción válida → Mostrar menú");
           await msg.reply(WELCOME_MENU);
         }
         return;
-      }
-
-      /* ====== TERAPIAS ====== */
+      }      /* ====== TERAPIAS ====== */
       case "THERAPY_TYPE": {
         const mapSel = { "1": "individual", "2": "pareja", "3": "adolescentes" };
         const key = mapSel[text.trim()];
@@ -692,12 +675,9 @@ client.on("message", async (msg) => {
         setState(chatId, "THERAPY_DETAIL", { therapyKey: key });
         const detail = await buildTherapyDetailByType(key);
         await msg.reply(detail);
-        // Después de mostrar detalle, invitamos a agendar con 1
         return;
       }
-
       case "THERAPY_DETAIL": {
-        // Nudging: si dice "1" aquí, lo llevamos a agendar
         if (text.trim() === "1") {
           await msg.reply("Perfecto, vamos a *agendar tu cita*.\nPaso 1/4: Indícame tu *nombre completo*.");
           setState(chatId, "CITA_NOMBRE");
@@ -707,78 +687,62 @@ client.on("message", async (msg) => {
         return;
       }
 
-      case "INFO_TERAPIAS": {
-        dbg("INFO_TERAPIAS → Nudging para agendar.");
-        await msg.reply("¿Te gustaría *agendar* una consulta? Responde *1*, o escribe *menú* para regresar.");
-        return;
-      }
-
       /* ====== EMPRESAS ====== */
       case "EMPRESAS_CONFIRM": {
         if (isYes(text)) {
-          dbg("EMPRESAS_CONFIRM: sí");
-          await msg.reply("Perfecto, una asesora te contactará. ¿Podrías compartir *nombre de tu empresa* y un *teléfono* de contacto?");
+          await msg.reply("Perfecto, una asesora te contactará. Compártenos *nombre de tu empresa* y un *teléfono* de contacto.");
           setState(chatId, "EMPRESAS_DATOS");
           return;
         }
         if (isNo(text)) {
-          dbg("EMPRESAS_CONFIRM: no");
           await msg.reply("De acuerdo. Si cambias de opinión, escribe *7* o *menú*.");
           setState(chatId, "IDLE");
           return;
         }
-        dbg("EMPRESAS_CONFIRM: respuesta inválida");
         await msg.reply("Responde *sí* o *no*.");
         return;
       }
       case "EMPRESAS_DATOS": {
-        dbg("EMPRESAS_DATOS → notificar admin");
         const aviso =
           "🏢 *LEAD EMPRESAS*\n" +
           `• Cliente: ${chatId}\n` +
           `• Datos: ${text}`;
-        await sendToAdminDuplicate(aviso);
-        await msg.reply("¡Gracias! Compartimos tus datos con el equipo y te contactarán pronto. Escribe *menú* para volver.");
+        await sendToAdmin(aviso);
+        await msg.reply("¡Gracias! Te contactaremos pronto. Escribe *menú* para volver.");
         setState(chatId, "IDLE");
         return;
       }
 
       /* ===== Recuperar cita / link ===== */
       case "FORGOT_NAME": {
-        dbg("FORGOT_NAME → pedir fecha");
-        setState(chatId, "FORGOT_DATE", { forgotName: text });
+        setState(chatId, "FORGOT_DATE", { nombre: text });
         await msg.reply("Paso 2/2: ¿Recuerdas *fecha aproximada* de tu cita? (ej.: *lunes*, *ayer*, *15/09*). Si no, escribe *no sé*.");
         return;
       }
       case "FORGOT_DATE": {
-        dbg("FORGOT_DATE → notificar admin");
         const approx = text.toLowerCase();
         const data = getSession(chatId).data;
         const aviso =
           "🔗 *RECUPERAR CITA/LINK*\n" +
           `• Cliente: ${chatId}\n` +
-          `• Nombre: ${data.forgotName}\n` +
+          `• Nombre: ${data.nombre}\n` + // antes: data.forgotName
           `• Fecha aprox: ${approx}`;
-        await sendToAdminDuplicate(aviso);
-        await msg.reply("Gracias. Revisaremos tu registro y te compartiremos el enlace o confirmación. Escribe *menú* para volver.");
+        await sendToAdmin(aviso);
+        await msg.reply("Gracias. Revisaremos tu registro y te compartiremos el enlace. Escribe *menú* para volver.");
         setState(chatId, "IDLE", {});
         return;
       }
 
       /* ===== Citas (Calendar) ===== */
       case "CITA_NOMBRE": {
-        dbg("CITA_NOMBRE → pedir fecha");
         setState(chatId, "CITA_FECHA_FREEFORM", { nombre: text });
         await msg.reply("Paso 2/4: Escribe la *fecha* (ej.: *próximo jueves*, *17 de agosto*, *17/08/2025*).");
         return;
       }
       case "CITA_FECHA_FREEFORM": {
-        dbg("CITA_FECHA_FREEFORM → parsear fecha");
         let parsed = { isoDate: null, readable: null };
         try { parsed = await parseDateSmart(text); } catch { }
-        dbg("🗓️ Fecha parseada:", parsed);
         if (!parsed.isoDate) {
-          dbg("Fecha inválida");
           await msg.reply("No pude interpretar la fecha. Intenta con *mañana*, *próximo jueves* o *17/08/2025*.");
           return;
         }
@@ -790,28 +754,22 @@ client.on("message", async (msg) => {
       }
       case "CITA_FECHA_CONFIRM": {
         if (isYes(text)) {
-          dbg("CITA_FECHA_CONFIRM: sí → pedir hora");
           setState(chatId, "CITA_HORA_FREEFORM");
           await msg.reply("Paso 3/4: Ahora dime la *hora* (ej.: *3 pm*, *15:00*, *medio día*).");
           return;
         }
         if (isNo(text)) {
-          dbg("CITA_FECHA_CONFIRM: no → reintentar fecha");
           setState(chatId, "CITA_FECHA_FREEFORM");
           await msg.reply("Ok, escribe nuevamente la *fecha*.");
           return;
         }
-        dbg("CITA_FECHA_CONFIRM: respuesta inválida");
         await msg.reply("Responde *sí* o *no*.");
         return;
       }
       case "CITA_HORA_FREEFORM": {
-        dbg("CITA_HORA_FREEFORM → parsear hora");
         let parsed = { isoTime: null, readable: null };
         try { parsed = await parseTimeSmart(text); } catch { }
-        dbg("⏰ Hora parseada:", parsed);
         if (!parsed.isoTime) {
-          dbg("Hora inválida");
           await msg.reply("No pude interpretar la hora. Intenta con *3 pm* o *15:00*.");
           return;
         }
@@ -823,55 +781,53 @@ client.on("message", async (msg) => {
       }
       case "CITA_HORA_CONFIRM": {
         if (isYes(text)) {
-          dbg("CITA_HORA_CONFIRM: sí → verificar calendar y crear evento");
           const data = getSession(chatId).data;
-          const { nombre, fechaISO, horaISO } = data;
+          const { nombre, fechaISO, horaISO, therapyKey } = data;
+          const durationMin = (therapyKey && THERAPY_CONFIG[therapyKey]?.durationMin) || 60;
 
-          // ⚡ Usamos solo los ISO
-          const startLocal = new Date(`${fechaISO}T${horaISO}:00`);
-          const endLocal = new Date(startLocal.getTime() + 60 * 60 * 1000);
-          const startISO = startLocal.toISOString();
-          const endISO = endLocal.toISOString();
-
-          dbg("📆 Intervalos calculados SOLO ISO:", { fechaISO, horaISO, startISO, endISO, tz: TIMEZONE });
+          // Antes: const { startDT, endDT } = buildEventRange(fechaISO, horaISO, durationMin);
+          // Ahora: separa “local” (para crear) y “UTC” (para freebusy)
+          const { startLocal, endLocal, startUTC, endUTC } =
+            buildEventRangeDual(fechaISO, horaISO, durationMin);
 
           try {
-            const free = await isSlotFree(startISO, endISO);
-            dbg("¿Slot libre?:", free);
+            const free = await isSlotFree(startUTC, endUTC); // consulta absoluta en UTC
             if (!free) {
-              dbg("Calendar ocupado en ese horario");
-              await msg.reply("⛔ Ese horario ya está ocupado. ¿Propones otra *fecha* u *hora*?");
+              await msg.reply("⛔ Ese horario ya está ocupado. ¿Propone otra fecha u hora?");
               setState(chatId, "CITA_FECHA_FREEFORM");
               return;
             }
             const event = await createCalendarEvent({
               summary: `Cita (psicología) con ${nombre}`,
               description: `Cita agendada vía WhatsApp (${chatId}).`,
-              startISO, endISO,
+              startDT: startLocal,   // local “flotante”
+              endDT: endLocal,       // local “flotante”
             });
-            dbg("Evento creado:", event?.id || "N/D");
-            await msg.reply(`✅ *Cita creada* para *${fechaISO}* a las *${horaISO}*.\nSi necesitas reprogramar, responde *menú* y elige la opción 5.`);
+            await msg.reply(
+              `✅ Cita creada para ${fechaISO} a las ${horaISO} (${durationMin} min).\n` +
+              `Si necesita reprogramar, escriba "menú" y elija la opción 5.`
+            );
             const aviso =
-              "📅 *ALERTA CITA*\n" +
+              "📅 Nueva cita agendada\n" +
               `• Cliente: ${chatId}\n` +
               `• Nombre: ${nombre}\n` +
               `• Fecha: ${fechaISO}\n` +
               `• Hora: ${horaISO}\n` +
-              `• Evento ID: ${event.id || "N/D"}`;
+              `• Duración: ${durationMin} minutos\n` +
+              "Le agradeceremos confirmar la recepción de esta cita.";
             await sendToAdmin(aviso);
             setState(chatId, "IDLE", {});
             return;
           } catch (e) {
             const msgErr = String(e?.message || e);
-            console.error("Error Calendar:", msgErr);
             if (/invalid_grant/i.test(msgErr)) {
               await msg.reply(
-                "⚠️ No pude verificar/crear la cita en Calendar por un problema de autorización.\n" +
+                "⚠️ No pude crear la cita en Calendar por un problema de autorización.\n" +
                 "Por favor intenta más tarde o escribe *4* para asistencia humana."
               );
             } else {
               await msg.reply(
-                "⚠️ No pude verificar/crear la cita en Calendar por un error temporal.\n" +
+                "⚠️ No pude crear la cita en Calendar por un error temporal.\n" +
                 "Intenta más tarde o escribe *4* para asistencia."
               );
             }
@@ -880,19 +836,16 @@ client.on("message", async (msg) => {
           }
         }
         if (isNo(text)) {
-          dbg("CITA_HORA_CONFIRM: no → reintentar hora");
           setState(chatId, "CITA_HORA_FREEFORM");
           await msg.reply("Ok, escribe nuevamente la *hora*.");
           return;
         }
-        dbg("CITA_HORA_CONFIRM: respuesta inválida");
         await msg.reply("Responde *sí* o *no*.");
         return;
       }
 
       /* ===== Canal humano ===== */
       case "HUMANO": {
-        dbg("Canal HUMANO: mantener silencio; pero confirmamos una vez.");
         await msg.reply("Gracias, una psicóloga dará seguimiento por este medio. 🙌");
         return;
       }
@@ -904,3 +857,4 @@ client.on("message", async (msg) => {
 });
 
 client.initialize();
+
