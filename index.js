@@ -492,22 +492,96 @@ async function getCalendarClient() {
   await auth.getAccessToken(); // fuerza nuevo token fresco
   return google.calendar({ version: "v3", auth });
 }
-async function isSlotFree(startDT, endDT) {
+
+// === Helpers de zona horaria ===
+function localDateTimeToUtcMs(fechaISO, horaISO, tz = TIMEZONE) {
+  const [y, mo, d] = fechaISO.split("-").map(Number);
+  const [h, mi] = horaISO.split(":").map(Number);
+
+  let ms = Date.UTC(y, mo - 1, d, h, mi);
+
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false
+  });
+  const parts = Object.fromEntries(fmt.formatToParts(new Date(ms)).map(p => [p.type, p.value]));
+  const dispY = Number(parts.year);
+  const dispM = Number(parts.month);
+  const dispD = Number(parts.day);
+  const dispH = Number(parts.hour);
+  const dispMin = Number(parts.minute);
+
+  const targetMinutes = (((y * 12 + (mo - 1)) * 31 + d) * 24 + h) * 60 + mi;
+  const shownMinutes  = (((dispY * 12 + (dispM - 1)) * 31 + dispD) * 24 + dispH) * 60 + dispMin;
+  const deltaMinutes = targetMinutes - shownMinutes;
+
+  ms += deltaMinutes * 60_000;
+  return ms;
+}
+
+function localRangeToUtcISO(fechaISO, horaISO, durationMin, tz = TIMEZONE) {
+  const startMs = localDateTimeToUtcMs(fechaISO, horaISO, tz);
+  const endMs = startMs + durationMin * 60_000;
+  return { timeMinISO: new Date(startMs).toISOString(), timeMaxISO: new Date(endMs).toISOString() };
+}
+
+function localRangeToUtcISOExtended(fechaISO, horaISO, durationMin, paddingMin = 0, tz = TIMEZONE) {
+  const startMs = localDateTimeToUtcMs(fechaISO, horaISO, tz) - paddingMin * 60_000;
+  const endMs = startMs + (durationMin + paddingMin * 2) * 60_000;
+  return { timeMinISO: new Date(startMs).toISOString(), timeMaxISO: new Date(endMs).toISOString() };
+}
+
+// === Función principal corregida ===
+async function isSlotReallyFree(fechaISO, horaISO, durationMin, msg) {
   try {
     const calendar = await getCalendarClient();
-    const res = await calendar.freebusy.query({
-      requestBody: {
-        timeMin: startDT,
-        timeMax: endDT,
-        timeZone: TIMEZONE,  // 👈 muy importante
-        items: [{ id: GOOGLE_CALENDAR_ID }],
-      },
+
+    // Rango exacto de la cita (UTC correcto)
+    const { timeMinISO, timeMaxISO } = localRangeToUtcISO(fechaISO, horaISO, durationMin, TIMEZONE);
+
+    console.log("🔍 Verificando disponibilidad (events.list con conversión local→UTC)...");
+    console.log("🕒 Local:", `${fechaISO} ${horaISO} (${durationMin}m)`, "TZ:", TIMEZONE);
+    console.log("🕒 Ventana UTC:", timeMinISO, "→", timeMaxISO);
+
+    const res = await calendar.events.list({
+      calendarId: GOOGLE_CALENDAR_ID,
+      timeMin: timeMinISO,
+      timeMax: timeMaxISO,
+      singleEvents: true,
+      orderBy: "startTime"
     });
-    const busy = res.data.calendars[GOOGLE_CALENDAR_ID]?.busy || [];
-    return busy.length === 0;
-  } catch (e) {
-    console.error("❌ Error consultando disponibilidad:", e?.message || e);
-    throw e;
+
+    const events = res.data.items || [];
+    if (events.length === 0) {
+      console.log("✅ Horario libre (0 eventos en ventana exacta).");
+      return true;
+    }
+
+    // Verificar solapamientos reales
+    const reqStart = new Date(timeMinISO).getTime();
+    const reqEnd = new Date(timeMaxISO).getTime();
+    const conflicts = events.filter(ev => {
+      const evStart = ev.start.dateTime ? new Date(ev.start.dateTime).getTime() : new Date(ev.start.date).getTime();
+      const evEnd = ev.end.dateTime ? new Date(ev.end.dateTime).getTime() : new Date(ev.end.date).getTime();
+      return evStart < reqEnd && evEnd > reqStart;
+    });
+
+    if (conflicts.length > 0) {
+      console.log("⛔ Conflicto detectado con:", conflicts.map(e => e.summary).join(", "));
+      if (msg) {
+        await msg.reply(
+          "⛔ Ese horario ya está *ocupado*.\nPor favor elige otra *hora* y escribe *reiniciar* para iniciar de nuevo."
+        );
+      }
+      return false;
+    }
+
+    console.log("✅ Horario libre (sin solapamientos).");
+    return true;
+  } catch (error) {
+    console.error("❌ Error verificando disponibilidad en Calendar:", error.message);
+    if (msg) await msg.reply("⚠️ Ocurrió un problema al verificar el calendario. Intenta nuevamente.");
+    return false;
   }
 }
 async function createCalendarEvent({ summary, description, startDT, endDT }) {
@@ -867,18 +941,19 @@ client.on("message", async (msg) => {
             return;
           }
 
-          // Antes: const { startDT, endDT } = buildEventRange(fechaISO, horaISO, durationMin);
-          // Ahora: separa “local” (para crear) y “UTC” (para freebusy)
+          // Obtener rangos de evento
           const { startLocal, endLocal, startUTC, endUTC } =
             buildEventRangeDual(fechaISO, horaISO, durationMin);
 
+          // Verificar disponibilidad usando isSlotReallyFree (nuevo nombre)
+          const free = await isSlotReallyFree(fechaISO, horaISO, durationMin, msg);
+          if (!free) {
+            // Si hay conflicto, responder y reiniciar correctamente el proceso
+            setState(chatId, "CITA_FECHA_FREEFORM");
+            return;
+          }
+
           try {
-            const free = await isSlotFree(startUTC, endUTC); // consulta absoluta en UTC
-            if (!free) {
-              await msg.reply("⛔ Ese horario ya está ocupado. ¿Propone otra fecha u hora?");
-              setState(chatId, "CITA_FECHA_FREEFORM");
-              return;
-            }
             const event = await createCalendarEvent({
               summary: `Cita (psicología) con ${nombre}`,
               description: `Cita agendada vía WhatsApp (${chatId}).`,
