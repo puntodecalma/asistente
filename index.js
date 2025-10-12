@@ -158,22 +158,30 @@ async function sendToAdmin(messageText) {
 }
 
 /* ==========  WHATSAPP CLIENT  ========== */
-// const client = new Client({
-//   authStrategy: new LocalAuth({ clientId: "bot-psicologia" }),
-//   puppeteer: {
-//     headless: false,
-//     executablePath: process.env.FILE_LOCATION || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-//     args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--window-size=1280,800"],
-//   },
-//   webVersionCache: { type: "local" },
-// });
+const client = new Client({
+   authStrategy: new LocalAuth({ clientId: "bot-psicologia" }),
+   puppeteer: {
+  headless: false, // en servidor ponlo true
+  executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  args: [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--window-size=1280,800"
+  ],
+},
+   webVersionCache: { type: "local" },
+ });
+ //PRODUCION
+ /*
 const client = new Client({
   authStrategy: new LocalAuth({ clientId: "bot-psicologia" }),
   puppeteer: {
     headless: true,
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
   },
-});
+});*/
 /* ==========  SESIONES EN MEMORIA  ========== */
 const sessions = new Map();
 function getSession(chatId) {
@@ -245,7 +253,63 @@ const THERAPIES_STATIC =
   "1) Terapia individual\n" +
   "2) Terapia de pareja\n" +
   "3) Terapia para adolescentes (15+)\n\n" +
+  "El enfoque de las sesiones es cognitivo conductual y humanista. Utilizando cada una según sean las necesidades de tus objetivos.\n\n" +
   "Responde con el *número* para ver detalles, costo y duración.";
+// === Validación de horario permitido para agendar citas ===
+function isAppointmentAllowed(fechaISO, horaISO) {
+  // fechaISO: "YYYY-MM-DD", horaISO: "HH:MM"
+  // Retorna {ok: boolean, reason: string|null}
+  if (!fechaISO || !horaISO) return { ok: false, reason: "Fecha u hora no válida." };
+  // Convertir a objeto Date en zona local
+  // Creamos un Date con la hora local (sin Z)
+  const [y, m, d] = fechaISO.split("-").map(Number);
+  const [h, mi] = horaISO.split(":").map(Number);
+  // JS Date interpreta YYYY-MM-DDTHH:MM como UTC, así que ajustamos con zona horaria
+  // Usamos Intl.DateTimeFormat para obtener el día de la semana en la zona adecuada
+  // Pero para la validación, basta con construir el Date y obtener el día
+  const dt = new Date(`${fechaISO}T${horaISO}:00`);
+  // Día de la semana: 0=domingo ... 6=sábado
+  // Para la zona horaria, usamos Intl.DateTimeFormat
+  let dayOfWeek;
+  try {
+    const fmt = new Intl.DateTimeFormat("es-MX", { timeZone: TIMEZONE, weekday: "long" });
+    const parts = fmt.formatToParts(dt);
+    const dayName = parts.find(p => p.type === "weekday")?.value?.toLowerCase();
+    // Mapear a número
+    // Domingo=0, Lunes=1, ..., Sábado=6
+    dayOfWeek =
+      dayName === "domingo" ? 0 :
+      dayName === "lunes" ? 1 :
+      dayName === "martes" ? 2 :
+      (dayName === "miércoles" || dayName === "miercoles") ? 3 :
+      dayName === "jueves" ? 4 :
+      dayName === "viernes" ? 5 :
+      (dayName === "sábado" || dayName === "sabado") ? 6 :
+      dt.getDay();
+  } catch {
+    dayOfWeek = dt.getDay();
+  }
+  // Validar por día
+  if (dayOfWeek === 0) {
+    return { ok: false, reason: "Domingo no se permiten citas." };
+  }
+  // Hora permitida por día
+  const hour = h;
+  const minute = mi;
+  if (dayOfWeek >= 1 && dayOfWeek <= 5) {
+    // Lunes a viernes: 10:00 a 18:00
+    if (hour < 10 || (hour > 18) || (hour === 18 && minute > 0)) {
+      return { ok: false, reason: "Lunes a viernes solo de 10:00 a 18:00 horas." };
+    }
+  } else if (dayOfWeek === 6) {
+    // Sábado: 10:00 a 15:00
+    if (hour < 10 || (hour > 15) || (hour === 15 && minute > 0)) {
+      return { ok: false, reason: "Sábados solo de 10:00 a 15:00 horas." };
+    }
+  }
+  // Si pasa todas las validaciones
+  return { ok: true, reason: null };
+}
 
 async function buildTherapiesInfoGeneral() {
   const now = Date.now();
@@ -595,6 +659,13 @@ client.on("message", async (msg) => {
     // (los grupos ya fueron filtrados por el prefijo más arriba)
     if (state === "IDLE" && !isHola && !isMenuCmd && !isMenuOption) return;
 
+    // Permitir reiniciar la sesión con "reiniciar"
+    if (lower === "reiniciar") {
+      reset(chatId);
+      await msg.reply("🔄 Registro reiniciado. Escribe *1* para comenzar a agendar una nueva cita.");
+      return;
+    }
+
     // Permitir volver al menú en cualquier momento
     if (isMenuCmd || isGreeting(text)) {
       reset(chatId);
@@ -784,6 +855,17 @@ client.on("message", async (msg) => {
           const data = getSession(chatId).data;
           const { nombre, fechaISO, horaISO, therapyKey } = data;
           const durationMin = (therapyKey && THERAPY_CONFIG[therapyKey]?.durationMin) || 60;
+
+          // Validar horario permitido antes de consultar disponibilidad
+          const horarioVal = isAppointmentAllowed(fechaISO, horaISO);
+          if (!horarioVal.ok) {
+            await msg.reply(
+              "⛔ Lo siento, las citas solo se pueden agendar de *lunes a viernes de 10:00 a 18:00* y los *sábados de 10:00 a 15:00*.\n\n" +
+              "Por favor selecciona una *hora válida* o escribe *reiniciar* para comenzar nuevamente el registro de tu cita."
+            );
+            setState(chatId, "CITA_HORA_FREEFORM");
+            return;
+          }
 
           // Antes: const { startDT, endDT } = buildEventRange(fechaISO, horaISO, durationMin);
           // Ahora: separa “local” (para crear) y “UTC” (para freebusy)
