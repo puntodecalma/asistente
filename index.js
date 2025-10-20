@@ -40,9 +40,9 @@ const ALLOW_FREEFORM_LLM = false;
 
 /* ======== CONFIG TERAPIAS ======== */
 const DEFAULT_THERAPY_CONFIG = {
-  individual: { price: 600, durationMin: 50, label: "Terapia individual" },
-  pareja: { price: 850, durationMin: 70, label: "Terapia de pareja" },
-  adolescentes: { price: 650, durationMin: 55, label: "Terapia para adolescentes (15+)" },
+  individual: { price: 380, durationMin: 50, label: "Terapia individual" },
+  pareja: { price: 500, durationMin: 50, label: "Terapia de pareja" },
+  adolescentes: { price: 380, durationMin: 50, label: "Terapia para adolescentes (15+)" },
 };
 let THERAPY_CONFIG = DEFAULT_THERAPY_CONFIG;
 try {
@@ -177,7 +177,7 @@ async function sendToAdmin(messageText) {
 }
 
 /* ==========  WHATSAPP CLIENT  ========== */
-const client = new Client({
+/*const client = new Client({
    authStrategy: new LocalAuth({ clientId: "bot-psicologia" }),
    puppeteer: {
   headless: false, // en servidor ponlo true
@@ -191,16 +191,16 @@ const client = new Client({
   ],
 },
    webVersionCache: { type: "local" },
- });
+ });*/
  //PRODUCION
- /*
+ 
 const client = new Client({
   authStrategy: new LocalAuth({ clientId: "bot-psicologia" }),
   puppeteer: {
     headless: true,
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
   },
-});*/
+});S
 /* ==========  SESIONES EN MEMORIA  ========== */
 const sessions = new Map();
 function getSession(chatId) {
