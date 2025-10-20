@@ -64,7 +64,7 @@ const IGNORED_NUMBERS = [];
 /*Depurar */
 function dbg(...args) {
   const ts = new Date().toISOString();
-  console.log(`[DBG ${ts}]`, ...args);
+ // console.log(`[DBG ${ts}]`, ...args);
 }
 
 /* =======  LIMPIEZA DE DIRECTORIOS WWebJS ======= */
@@ -116,6 +116,25 @@ async function generateWithGemini(content, { tries = 4 } = {}) {
     }
   }
   throw lastErr;
+}
+async function detectGreetingAI(text) {
+  if (!genAI) return false;
+  try {
+    const model = getModel(MODEL_PRIMARY);
+    const prompt = `
+Eres un detector de saludos amables. 
+Si el siguiente texto parece un saludo, responde sólo "true". 
+De lo contrario responde "false".
+
+Texto: "${text}"
+`;
+    const res = await model.generateContent(prompt);
+    const reply = (await res.response.text()).toLowerCase();
+    return reply.includes("true");
+  } catch (e) {
+    console.warn("⚠️ Error al evaluar saludo con IA:", e.message);
+    return false;
+  }
 }
 
 /* ==========  SCRAPER  ========== */
@@ -725,7 +744,7 @@ client.on("message", async (msg) => {
     // Sesión y activación
     const session = getSession(chatId);
     const state = session?.state || "IDLE";
-    const isHola = lower === "hola";
+    const isHola = lower === "hola" || await detectGreetingAI(text);
     const isMenuCmd = lower === "menú" || lower === "menu";
     const isMenuOption = /^[1-7]$/.test(lower);
 
