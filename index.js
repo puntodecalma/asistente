@@ -123,7 +123,7 @@ async function detectGreetingAI(text) {
     const model = getModel(MODEL_PRIMARY);
     const prompt = `
 Eres un detector de saludos amables. 
-Si el siguiente texto parece un saludo, responde sólo "true". 
+Si el siguiente texto parece un saludo o solicitan infirmación respecto al servicio que es de psicologia o cualquier duda de los servicios, responde sólo "true". 
 De lo contrario responde "false".
 
 Texto: "${text}"
@@ -177,7 +177,8 @@ async function sendToAdmin(messageText) {
 }
 
 /* ==========  WHATSAPP CLIENT  ========== */
-/*const client = new Client({
+/*
+const client = new Client({
    authStrategy: new LocalAuth({ clientId: "bot-psicologia" }),
    puppeteer: {
   headless: false, // en servidor ponlo true
@@ -200,7 +201,7 @@ const client = new Client({
     headless: true,
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
   },
-});S
+});
 /* ==========  SESIONES EN MEMORIA  ========== */
 const sessions = new Map();
 function getSession(chatId) {
