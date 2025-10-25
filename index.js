@@ -71,12 +71,12 @@ function dbg(...args) {
 const AUTH_DIR = path.resolve(__dirname, ".wwebjs_auth");
 const CACHE_DIR = path.resolve(__dirname, ".wwebjs_cache");
 function cleanupWhatsAppDirs() {
-  try {
+ /* try {
     if (fs.existsSync(AUTH_DIR)) {
       fs.rmSync(AUTH_DIR, { recursive: true, force: true });
       console.log("🧹 Eliminado .wwebjs_auth");
     }
-  } catch (e) { console.warn("No se pudo eliminar .wwebjs_auth:", e.message); }
+  } catch (e) { console.warn("No se pudo eliminar .wwebjs_auth:", e.message); }*/
   try {
     if (fs.existsSync(CACHE_DIR)) {
       fs.rmSync(CACHE_DIR, { recursive: true, force: true });
@@ -962,8 +962,24 @@ client.on("message", async (msg) => {
 
       /* ===== Citas (Calendar) ===== */
       case "CITA_NOMBRE": {
-        setState(chatId, "CITA_FECHA_FREEFORM", { nombre: text });
-        await msg.reply("Paso 2/4: Escribe la *fecha* (ej.: *próximo jueves*, *17 de agosto*, *17/08/2025*).");
+        setState(chatId, "CITA_MODALIDAD", { nombre: text });
+        await msg.reply("Paso 2/5: ¿Tu cita será *en línea* o *presencial*?");
+        return;
+      }
+      case "CITA_MODALIDAD": {
+        const modalidadTxt = text.toLowerCase();
+        let modalidad;
+        if (modalidadTxt.includes("línea") || modalidadTxt.includes("linea")) {
+          modalidad = "en línea";
+        } else if (modalidadTxt.includes("presencial")) {
+          modalidad = "presencial";
+        }
+        if (!modalidad) {
+          await msg.reply("Por favor indica si tu cita será *en línea* o *presencial*.");
+          return;
+        }
+        setState(chatId, "CITA_FECHA_FREEFORM", { modalidad });
+        await msg.reply("Paso 3/5: Escribe la *fecha* (ej.: *próximo jueves*, *17 de agosto*, *17/08/2025*).");
         return;
       }
       case "CITA_FECHA_FREEFORM": {
@@ -982,7 +998,7 @@ client.on("message", async (msg) => {
       case "CITA_FECHA_CONFIRM": {
         if (isYes(text)) {
           setState(chatId, "CITA_HORA_FREEFORM");
-          await msg.reply("Paso 3/4: Ahora dime la *hora* (ej.: *3 pm*, *15:00*, *medio día*).");
+          await msg.reply("Paso 4/5: Ahora dime la *hora* (ej.: *3 pm*, *15:00*, *medio día*).");
           return;
         }
         if (isNo(text)) {
@@ -1009,7 +1025,7 @@ client.on("message", async (msg) => {
       case "CITA_HORA_CONFIRM": {
         if (isYes(text)) {
           const data = getSession(chatId).data;
-          const { nombre, fechaISO, horaISO, therapyKey } = data;
+          const { nombre, fechaISO, horaISO, therapyKey, modalidad } = data;
           const durationMin = (therapyKey && THERAPY_CONFIG[therapyKey]?.durationMin) || 60;
 
           // Validar horario permitido antes de consultar disponibilidad
@@ -1050,6 +1066,7 @@ client.on("message", async (msg) => {
               "📅 Nueva cita agendada\n" +
               `• Cliente: ${chatId}\n` +
               `• Nombre: ${nombre}\n` +
+              `• Modalidad: ${modalidad}\n` +
               `• Fecha: ${fechaISO}\n` +
               `• Hora: ${horaISO}\n` +
               `• Duración: ${durationMin} minutos\n` +
