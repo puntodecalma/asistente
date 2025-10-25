@@ -86,44 +86,106 @@ function cleanupWhatsAppDirs() {
 }
 cleanupWhatsAppDirs();
 
-/* ====================  GEMINI  ===================== */
+/* ====================  GEMINI (2.x compatible)  ===================== */
 const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
+
+// --- Manejo automático de modelos "live" ---
 function getModel(name) {
   if (!genAI) throw new Error("Falta GEMINI_API_KEY");
+
+  // Los modelos "live" requieren client="web" para acceso en tiempo real
+  if (name.includes("live")) {
+    return genAI.getGenerativeModel({ model: name, client: "web" });
+  }
+
   return genAI.getGenerativeModel({ model: name });
 }
+
+// --- Generador universal (maneja modelos normales y live con streaming) ---
 async function generateWithGemini(content, { tries = 4 } = {}) {
   if (!genAI) return "";
   let lastErr;
   let modelName = MODEL_PRIMARY;
+
   for (let i = 0; i < tries; i++) {
     try {
       const model = getModel(modelName);
+
+      // Si es modelo "live", usamos generateContentStream
+      if (modelName.includes("live")) {
+        const res = await model.generateContentStream([{ text: content }]);
+        let fullText = "";
+        for await (const chunk of res.stream) {
+          const chunkText = chunk.text();
+          if (chunkText) fullText += chunkText;
+        }
+        if (fullText.trim()) return fullText.trim();
+        throw new Error("Respuesta vacía del modelo (stream)");
+      }
+
+      // Modelos normales
       const res = await model.generateContent(content);
       const text = await res?.response?.text();
       if (text && text.trim()) return text.trim();
+
       throw new Error("Respuesta vacía del modelo");
     } catch (err) {
       lastErr = err;
       const msg = String(err?.message || err);
       const retriable = /503|429|temporarily|unavailable|ECONNRESET|ETIMEDOUT/i.test(msg);
+
+      // Si falla en primer intento, usar modelo alternativo
       if (i === 1) modelName = MODEL_FALLBACK;
+
       if (retriable && i < tries - 1) {
         await new Promise(r => setTimeout(r, 500 * Math.pow(2, i)));
         continue;
       }
+
+      console.warn(`⚠️ Error con modelo ${modelName}:`, msg);
       throw err;
     }
   }
+
   throw lastErr;
 }
-async function detectGreetingAI(text) {
+// Lista de saludos comunes y frases iniciales para detección rápida
+const SALUDOS_COMUNES = [
+  "hola", "buenos días", "buenos dias", "buenas tardes", "buenas noches",
+  "buen día", "buen dia", "saludos", "qué tal", "que tal",
+  "hey", "holi", "holas", "saludo", "hi", "hello",
+  "me puedes dar información", "me puedes dar informacion", "quisiera información", "quisiera informacion",
+  "quiero información", "quiero informacion", "información", "informacion", "tienen citas", "agendar cita",
+  "agenda", "necesito información", "necesito informacion", "tengo una duda", "duda", "consulta"
+];
+
+/**
+ * Detecta si un texto es un saludo o una frase de inicio, usando heurística local y Gemini solo si es ambiguo.
+ * Si la sesión es nueva (IDLE o sin registro), retorna true siempre (para mostrar el menú principal).
+ * @param {string} text
+ * @param {string} [chatId] - opcional, para revisar estado de sesión
+ * @returns {Promise<boolean>}
+ */
+async function detectGreetingAI(text, chatId) {
+  // Si la sesión es nueva o no existe, siempre mostrar el menú
+  if (chatId) {
+    const session = sessions.get(chatId);
+    if (!session || session.state === "IDLE") return true;
+  }
+  const clean = (text || "").toLowerCase().replace(/[¿?¡!.,]/g, "").trim();
+  // Detección rápida por coincidencia exacta o inclusión
+  for (const saludo of SALUDOS_COMUNES) {
+    if (clean === saludo || clean.startsWith(saludo) || clean.includes(saludo)) {
+      return true;
+    }
+  }
+  // Si no coincide localmente, usar Gemini para casos ambiguos
   if (!genAI) return false;
   try {
     const model = getModel(MODEL_PRIMARY);
     const prompt = `
-Eres un detector de saludos amables. 
-Si el siguiente texto parece un saludo o solicitan infirmación respecto al servicio que es de psicologia o cualquier duda de los servicios, responde sólo "true". 
+Eres un detector de saludos amables o frases iniciales de contacto de clientes para un consultorio psicológico.
+Si el siguiente texto parece un saludo, una frase de inicio de conversación o alguien solicita información sobre los servicios, responde SOLO "true".
 De lo contrario responde "false".
 
 Texto: "${text}"
